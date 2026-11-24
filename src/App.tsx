@@ -28,58 +28,16 @@ import {
   ArrowUpDown,
   FileArchive,
   Lock,
-  ExternalLink
+  ExternalLink,
+  RefreshCw,
+  Copy,
+  Check,
+  FileDown
 } from 'lucide-react';
 
 // --- GOOGLE APPS SCRIPT WEB APP URL (GOOGLE DRIVE BACKEND) ---
 const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbxnEFL_EeJCUA7NCtKULWih-6wtWoLIJH9y26sShOJA7Oc-eyht0jGocgN7ba8B0yUP/exec';
-
-// Sample pre-populated procurement documents (ditampilkan jika Drive masih kosong)
-const INITIAL_DOCUMENTS = [
-  {
-    id: 'doc-101',
-    title: 'Kontrak Pengadaan Server Data Center IBM Power10',
-    fileName: 'Kontrak_Server_IBM_2026.pdf',
-    fileSize: 4820000,
-    fileType: 'pdf',
-    category: 'Kontrak / Perjanjian',
-    refNumber: 'KTR-PROC-2026-001',
-    vendor: 'PT Solusi Teknologi Distribusi',
-    amount: 650000000,
-    docDate: '2026-01-15',
-    uploadDate: '2026-01-16T09:30:00Z',
-    uploaderName: 'Ahmad Subagja',
-    uploaderEmail: 'ahmad.s@company.co.id',
-    uploaderId: 'user-001',
-    status: 'Approved',
-    notes: 'Garansi 3 tahun on-site support SLA 4 jam. Sudah ditandatangani oleh Direktur Utama.',
-    tags: ['Server', 'IT Infrastructure', 'IBM', 'High Value'],
-    fileUrl: '',
-    driveFileId: ''
-  },
-  {
-    id: 'doc-102',
-    title: 'PO Perpanjangan Lisensi Software Enterprise ERP',
-    fileName: 'PO_Lisensi_ERP_SAP_Q1.xlsx',
-    fileSize: 1250000,
-    fileType: 'xlsx',
-    category: 'Purchase Order (PO)',
-    refNumber: 'PO-2026-0891',
-    vendor: 'SAP Asia Pacific Pte Ltd',
-    amount: 280000000,
-    docDate: '2026-02-01',
-    uploadDate: '2026-02-02T14:15:00Z',
-    uploaderName: 'Rina Wijaya',
-    uploaderEmail: 'rina.w@company.co.id',
-    uploaderId: 'user-002',
-    status: 'Approved',
-    notes: 'Perpanjangan lisensi 150 user SAP S/4HANA Cloud untuk periode 2026-2027.',
-    tags: ['Software', 'ERP', 'SAP', 'Subscription'],
-    fileUrl: '',
-    driveFileId: ''
-  }
-];
 
 const CATEGORIES = [
   'Kontrak / Perjanjian',
@@ -140,8 +98,9 @@ export default function App() {
   const [authError, setAuthError] = useState('');
 
   // Main Documents State
-  const [documents, setDocuments] = useState<any[]>(INITIAL_DOCUMENTS);
+  const [documents, setDocuments] = useState<any[]>([]);
   const [isLoadingDocs, setIsLoadingDocs] = useState(true);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedStatus, setSelectedStatus] = useState('All');
@@ -152,6 +111,8 @@ export default function App() {
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ msg: string; type: string } | null>(null);
 
   // Upload Form State
@@ -193,18 +154,20 @@ export default function App() {
   }, []);
 
   // --- FETCH DOCUMENTS FROM GOOGLE DRIVE / SHEETS ---
-  const fetchDocumentsFromDrive = async () => {
+  const fetchDocumentsFromDrive = async (showNotification = false) => {
     setIsLoadingDocs(true);
     try {
-      const response = await fetch(APPS_SCRIPT_URL);
+      const response = await fetch(`${APPS_SCRIPT_URL}?t=${Date.now()}`);
       const result = await response.json();
       if (result.status === 'success' && Array.isArray(result.data)) {
-        if (result.data.length > 0) {
-          const mapped = result.data.map(mapSheetRowToDoc);
-          setDocuments(mapped);
-          localStorage.setItem('procurement_drive_cache', JSON.stringify(mapped));
-        } else {
-          setDocuments(INITIAL_DOCUMENTS);
+        const mapped = result.data.map(mapSheetRowToDoc);
+        setDocuments(mapped);
+        localStorage.setItem('procurement_drive_cache', JSON.stringify(mapped));
+        setLastSyncedAt(
+          new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+        );
+        if (showNotification) {
+          showToast('Data berhasil disinkronkan dengan Google Drive.');
         }
       }
     } catch (err) {
@@ -215,13 +178,16 @@ export default function App() {
           setDocuments(JSON.parse(cached));
         } catch {}
       }
+      if (showNotification) {
+        showToast('Gagal menyinkronkan data. Periksa koneksi internet Anda.', 'error');
+      }
     } finally {
       setIsLoadingDocs(false);
     }
   };
 
   useEffect(() => {
-    fetchDocumentsFromDrive();
+    fetchDocumentsFromDrive(false);
   }, []);
 
   // Toast Helper
@@ -364,8 +330,7 @@ export default function App() {
       if (result.status === 'success' && result.data) {
         const createdDoc = mapSheetRowToDoc(result.data);
         setDocuments(prev => {
-          const withoutSamples = prev.filter(d => d.driveFileId);
-          const updated = [createdDoc, ...withoutSamples];
+          const updated = [createdDoc, ...prev];
           localStorage.setItem('procurement_drive_cache', JSON.stringify(updated));
           return updated;
         });
@@ -383,7 +348,7 @@ export default function App() {
           tagsInput: '',
           file: null
         });
-        showToast('Berkas berhasil diunggah ke Google Drive klien!');
+        showToast('Berkas berhasil diunggah ke Google Drive!');
       } else {
         throw new Error(result.message || 'Gagal mengunggah ke Google Drive.');
       }
@@ -427,21 +392,41 @@ export default function App() {
     showToast('Dokumen telah berhasil dihapus.', 'info');
   };
 
-  const handleUpdateStatus = (docId: string, newStatus: string) => {
+  const handleUpdateStatus = async (docId: string, newStatus: string) => {
     if (!user || user.isAnonymous) {
       showToast('Silakan login untuk memperbarui status dokumen.', 'error');
       return;
     }
+
     const updatedDocs = documents.map(d => (d.id === docId ? { ...d, status: newStatus } : d));
     setDocuments(updatedDocs);
     localStorage.setItem('procurement_drive_cache', JSON.stringify(updatedDocs));
     if (selectedDoc && selectedDoc.id === docId) {
       setSelectedDoc((prev: any) => ({ ...prev, status: newStatus }));
     }
-    showToast(`Status dokumen diubah menjadi ${newStatus}`);
+
+    setIsUpdatingStatus(true);
+    try {
+      const response = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'updateStatus', id: docId, status: newStatus })
+      });
+      const result = await response.json();
+      if (result.status === 'success') {
+        showToast(`Status diubah menjadi "${newStatus}" & tersimpan di Google Drive.`);
+      } else {
+        showToast('Status berubah di tampilan, namun gagal menyinkronkan ke server.', 'error');
+      }
+    } catch (err) {
+      console.error('Update status error:', err);
+      showToast('Status berubah secara lokal. Periksa koneksi untuk sinkronisasi.', 'info');
+    } finally {
+      setIsUpdatingStatus(false);
+    }
   };
 
-  // Download & Open Google Drive
+  // Download & Copy Drive Link
   const handleDownload = (docItem: any) => {
     if (docItem.driveFileId) {
       const downloadUrl = `https://drive.google.com/uc?export=download&id=${docItem.driveFileId}`;
@@ -449,9 +434,63 @@ export default function App() {
       showToast(`Mengunduh berkas dari Google Drive: ${docItem.fileName}`);
     } else if (docItem.fileUrl) {
       window.open(docItem.fileUrl, '_blank', 'noopener,noreferrer');
-    } else {
-      showToast(`Ini adalah data contoh (${docItem.fileName}). Unggah file asli untuk mengunduh dari Google Drive.`, 'info');
     }
+  };
+
+  const handleCopyDriveLink = async (url: string) => {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedLink(true);
+      showToast('Link Google Drive berhasil disalin!');
+      setTimeout(() => setCopiedLink(false), 2500);
+    } catch {
+      showToast('Gagal menyalin link.', 'error');
+    }
+  };
+
+  // Export Rekap CSV
+  const handleExportCSV = () => {
+    if (filteredDocuments.length === 0) {
+      showToast('Tidak ada data dokumen untuk diekspor.', 'info');
+      return;
+    }
+    const headers = [
+      'Judul Dokumen',
+      'Nama File',
+      'Kategori',
+      'No. Referensi',
+      'Vendor',
+      'Nominal (IDR)',
+      'Tanggal Dokumen',
+      'Status',
+      'Pengunggah',
+      'Link Google Drive'
+    ];
+    const rows = filteredDocuments.map(d => [
+      `"${(d.title || '').replace(/"/g, '""')}"`,
+      `"${(d.fileName || '').replace(/"/g, '""')}"`,
+      `"${(d.category || '').replace(/"/g, '""')}"`,
+      `"${(d.refNumber || '').replace(/"/g, '""')}"`,
+      `"${(d.vendor || '').replace(/"/g, '""')}"`,
+      d.amount || 0,
+      `"${d.docDate || ''}"`,
+      `"${d.status || ''}"`,
+      `"${(d.uploaderName || '').replace(/"/g, '""')}"`,
+      `"${d.fileUrl || ''}"`
+    ]);
+
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Rekap_Dokumen_Procurement_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('Rekap dokumen berhasil diunduh (CSV).');
   };
 
   // Filtered and Sorted Documents
@@ -589,7 +628,7 @@ export default function App() {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="font-bold text-lg leading-tight tracking-tight text-white">ProcureDoc</h1>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded border border-indigo-500/30">
+                <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/30">
                   Google Drive Sync
                 </span>
               </div>
@@ -620,9 +659,18 @@ export default function App() {
           </div>
 
           {/* User & Auth Actions */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <button
+              onClick={() => fetchDocumentsFromDrive(true)}
+              disabled={isLoadingDocs}
+              title="Sinkronkan ulang dari Google Drive"
+              className="p-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-300 hover:text-white transition-all disabled:opacity-50"
+            >
+              <RefreshCw size={16} className={isLoadingDocs ? 'animate-spin text-indigo-400' : ''} />
+            </button>
+
             {user && !user.isAnonymous ? (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2.5">
                 <div className="hidden sm:flex flex-col text-right">
                   <span className="text-sm font-medium text-slate-200">
                     {user.displayName || user.email?.split('@')[0]}
@@ -656,6 +704,7 @@ export default function App() {
                 </button>
               </div>
             )}
+
             <button
               onClick={() => {
                 if (!user || user.isAnonymous) {
@@ -678,8 +727,8 @@ export default function App() {
         <div className="bg-amber-950/40 border-b border-amber-800/40 px-4 py-2.5 text-center text-xs text-amber-200/90 flex items-center justify-center gap-2">
           <Lock size={14} className="text-amber-400 shrink-0" />
           <span>
-            Anda mengakses sebagai <strong>Guest Viewer</strong>. Untuk mengunggah dokumen ke Google Drive atau memperbarui
-            status, silakan
+            Anda mengakses sebagai <strong>Guest Viewer</strong> (hanya lihat & unduh). Untuk mengunggah dokumen atau
+            mengubah status, silakan
           </span>
           <button
             onClick={() => {
@@ -688,7 +737,7 @@ export default function App() {
             }}
             className="underline font-bold text-amber-300 hover:text-amber-100"
           >
-            Masuk / Dapatkan Akun Pengadaan
+            Masuk Akun Pengadaan
           </button>
         </div>
       )}
@@ -836,36 +885,46 @@ export default function App() {
             </div>
           </div>
 
-          {/* View Toggle (Table / Grid) */}
-          <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-700 self-end md:self-auto">
+          {/* Right Controls: Export CSV + View Toggle */}
+          <div className="flex items-center gap-2 self-end md:self-auto">
             <button
-              onClick={() => setViewMode('table')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                viewMode === 'table' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
+              onClick={handleExportCSV}
+              title="Unduh rekap data ke Excel / CSV"
+              className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all"
             >
-              <List size={15} /> Tabel
+              <FileDown size={15} className="text-emerald-400" /> Export Rekap
             </button>
-            <button
-              onClick={() => setViewMode('grid')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                viewMode === 'grid' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Grid size={15} /> Kartu Grid
-            </button>
+
+            <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-700">
+              <button
+                onClick={() => setViewMode('table')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  viewMode === 'table' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <List size={15} /> Tabel
+              </button>
+              <button
+                onClick={() => setViewMode('grid')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  viewMode === 'grid' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Grid size={15} /> Kartu Grid
+              </button>
+            </div>
           </div>
         </div>
 
         {/* RESULTS SUMMARY BAR */}
         <div className="flex items-center justify-between text-xs text-slate-400 px-1">
           <span>
-            {isLoadingDocs ? (
-              'Menyinkronkan data dengan Google Drive...'
+            {isLoadingDocs && documents.length === 0 ? (
+              'Menyinkronkan arsip dengan Google Drive...'
             ) : (
               <>
                 Menampilkan <strong className="text-slate-200">{filteredDocuments.length}</strong> dari {documents.length}{' '}
-                dokumen
+                dokumen {lastSyncedAt && <span className="text-slate-500">• Sinkron terakhir {lastSyncedAt}</span>}
               </>
             )}
           </span>
@@ -884,25 +943,37 @@ export default function App() {
         </div>
 
         {/* DOCUMENT LIST CONTAINER */}
-        {filteredDocuments.length === 0 ? (
+        {isLoadingDocs && documents.length === 0 ? (
+          <div className="bg-slate-800/30 border border-slate-700/60 rounded-2xl p-12 text-center flex flex-col items-center justify-center">
+            <RefreshCw size={32} className="text-indigo-400 animate-spin mb-3" />
+            <h4 className="text-sm font-semibold text-slate-200">Memuat Dokumen dari Google Drive...</h4>
+            <p className="text-xs text-slate-400 mt-1">Mohon tunggu sebentar</p>
+          </div>
+        ) : filteredDocuments.length === 0 ? (
           <div className="bg-slate-800/30 border border-slate-700/60 rounded-2xl p-12 text-center flex flex-col items-center justify-center">
             <div className="w-16 h-16 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-500 mb-4">
               <Folder size={32} />
             </div>
-            <h4 className="text-base font-semibold text-slate-200">Tidak Ada Dokumen Ditemukan</h4>
+            <h4 className="text-base font-semibold text-slate-200">
+              {documents.length === 0 ? 'Belum Ada Dokumen Tersimpan' : 'Tidak Ada Dokumen Ditemukan'}
+            </h4>
             <p className="text-xs text-slate-400 max-w-sm mt-1">
-              Coba sesuaikan kata kunci pencarian atau ganti filter kategori/status Anda.
+              {documents.length === 0
+                ? 'Klik tombol "+ Unggah File" di pojok kanan atas untuk mulai mengarsipkan dokumen ke Google Drive.'
+                : 'Coba sesuaikan kata kunci pencarian atau ganti filter kategori/status Anda.'}
             </p>
-            <button
-              onClick={() => {
-                setSearchQuery('');
-                setSelectedCategory('All');
-                setSelectedStatus('All');
-              }}
-              className="mt-4 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-semibold transition-all"
-            >
-              Bersihkan Filter
-            </button>
+            {documents.length > 0 && (
+              <button
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedCategory('All');
+                  setSelectedStatus('All');
+                }}
+                className="mt-4 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-semibold transition-all"
+              >
+                Bersihkan Filter
+              </button>
+            )}
           </div>
         ) : viewMode === 'table' ? (
           /* TABLE VIEW */
@@ -930,6 +1001,7 @@ export default function App() {
                         className="hover:bg-slate-700/30 transition-colors group cursor-pointer"
                         onClick={() => {
                           setSelectedDoc(docItem);
+                          setCopiedLink(false);
                           setDetailModalOpen(true);
                         }}
                       >
@@ -971,6 +1043,7 @@ export default function App() {
                             <button
                               onClick={() => {
                                 setSelectedDoc(docItem);
+                                setCopiedLink(false);
                                 setDetailModalOpen(true);
                               }}
                               title="Lihat Detail"
@@ -1014,6 +1087,7 @@ export default function App() {
                   key={docItem.id}
                   onClick={() => {
                     setSelectedDoc(docItem);
+                    setCopiedLink(false);
                     setDetailModalOpen(true);
                   }}
                   className="bg-slate-800/60 hover:bg-slate-800 border border-slate-700/60 hover:border-slate-600 rounded-2xl p-4 flex flex-col justify-between transition-all duration-200 group cursor-pointer shadow-sm hover:shadow-md"
@@ -1078,11 +1152,10 @@ export default function App() {
       {/* FOOTER */}
       <footer className="mt-auto border-t border-slate-800 bg-slate-950 py-4 px-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p>© 2026 Procurement Division Portal. Internal Enterprise Document Management System.</p>
-          <div className="flex items-center gap-4">
-            <span className="text-emerald-500/80">Terhubung ke Google Drive</span>
-            <span>•</span>
-            <span className="hover:text-slate-400 transition-colors">Bantuan IT Support</span>
+          <p>© 2026 ProcureDoc — Sistem Manajemen Dokumen & Arsip Pengadaan</p>
+          <div className="flex items-center gap-2 text-emerald-400/90">
+            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span>Terhubung ke Google Drive</span>
           </div>
         </div>
       </footer>
@@ -1098,7 +1171,7 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="font-bold text-base text-slate-100">Unggah Dokumen ke Google Drive</h3>
-                  <p className="text-xs text-slate-400">Berkas akan otomatis disimpan ke folder Google Drive klien</p>
+                  <p className="text-xs text-slate-400">Berkas akan otomatis disimpan ke folder arsip Google Drive</p>
                 </div>
               </div>
               <button
@@ -1217,11 +1290,17 @@ export default function App() {
                   <label className="block text-xs font-semibold text-slate-300 mb-1">Nominal Kontrak / PO (IDR)</label>
                   <input
                     type="number"
+                    min="0"
                     placeholder="Contoh: 150000000"
                     value={uploadForm.amount}
                     onChange={e => setUploadForm({ ...uploadForm, amount: e.target.value })}
                     className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                   />
+                  {uploadForm.amount && Number(uploadForm.amount) > 0 && (
+                    <p className="text-[11px] text-emerald-400 mt-1 font-medium">
+                      Terbaca: {formatIDR(Number(uploadForm.amount))}
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -1329,11 +1408,14 @@ export default function App() {
                 </div>
                 {user && !user.isAnonymous && (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-400">Ubah Status:</span>
+                    <span className="text-xs text-slate-400">
+                      {isUpdatingStatus ? 'Menyimpan...' : 'Ubah Status:'}
+                    </span>
                     <select
                       value={selectedDoc.status}
+                      disabled={isUpdatingStatus}
                       onChange={e => handleUpdateStatus(selectedDoc.id, e.target.value)}
-                      className="bg-slate-900 border border-slate-700 text-xs text-slate-200 px-3 py-1.5 rounded-lg focus:outline-none"
+                      className="bg-slate-900 border border-slate-700 text-xs text-slate-200 px-3 py-1.5 rounded-lg focus:outline-none disabled:opacity-50"
                     >
                       {STATUS_LIST.map(st => (
                         <option key={st} value={st}>
@@ -1402,30 +1484,39 @@ export default function App() {
               )}
 
               {/* Google Drive Actions */}
-              <div className="bg-slate-950 rounded-2xl border border-slate-800 p-8 text-center flex flex-col items-center justify-center space-y-3">
-                <div className="w-14 h-14 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400">
-                  <FileText size={28} />
+              <div className="bg-slate-950 rounded-2xl border border-slate-800 p-6 text-center flex flex-col items-center justify-center space-y-3">
+                <div className="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400">
+                  <FileText size={24} />
                 </div>
                 <div>
                   <h5 className="text-sm font-semibold text-slate-200">Arsip Digital Google Drive</h5>
                   <p className="text-xs text-slate-400 mt-0.5">{selectedDoc.fileName}</p>
                 </div>
-                <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
                   {selectedDoc.fileUrl && (
-                    <a
-                      href={selectedDoc.fileUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600 px-4 py-2 rounded-xl text-xs font-bold transition-all"
-                    >
-                      <ExternalLink size={15} /> Buka di Google Drive
-                    </a>
+                    <>
+                      <a
+                        href={selectedDoc.fileUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600 px-3.5 py-2 rounded-xl text-xs font-bold transition-all"
+                      >
+                        <ExternalLink size={14} /> Buka di Drive
+                      </a>
+                      <button
+                        onClick={() => handleCopyDriveLink(selectedDoc.fileUrl)}
+                        className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600 px-3.5 py-2 rounded-xl text-xs font-bold transition-all"
+                      >
+                        {copiedLink ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                        {copiedLink ? 'Link Tersalin' : 'Salin Link'}
+                      </button>
+                    </>
                   )}
                   <button
                     onClick={() => handleDownload(selectedDoc)}
                     className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-600/20"
                   >
-                    <Download size={15} /> Unduh Berkas
+                    <Download size={14} /> Unduh Berkas
                   </button>
                 </div>
               </div>
@@ -1499,7 +1590,7 @@ export default function App() {
                 <input
                   type="email"
                   required
-                  placeholder="nama@company.co.id"
+                  placeholder="nama@perusahaan.co.id"
                   value={authForm.email}
                   onChange={e => setAuthForm({ ...authForm, email: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
